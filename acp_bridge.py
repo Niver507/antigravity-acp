@@ -21,6 +21,7 @@ import re
 import json
 import signal
 import difflib
+import shutil
 import subprocess
 import threading
 from pathlib import Path
@@ -52,11 +53,34 @@ def find_server_binary() -> Path:
     if env_bin and Path(env_bin).exists():
         return Path(env_bin)
 
-    for name in ["agy_acp_server.exe", "agy_acp_server.par"]:
+    bin_names = ["agy_acp_server.exe", "agy_acp_server.par"]
+
+    # 1. Check BASE_DIR
+    for name in bin_names:
         candidate = BASE_DIR / name
         if candidate.exists():
             return candidate
 
+    # 2. Check known standard install locations
+    search_dirs = [
+        Path(r"C:\antigravity-acp"),
+        Path.home() / ".local" / "share" / "antigravity-acp",
+        Path.home() / "antigravity-acp",
+        Path.home() / ".gemini" / "antigravity-acp",
+    ]
+    for sdir in search_dirs:
+        for name in bin_names:
+            candidate = sdir / name
+            if candidate.exists():
+                return candidate
+
+    # 3. Check PATH
+    for name in bin_names:
+        which_path = shutil.which(name)
+        if which_path and Path(which_path).exists():
+            return Path(which_path)
+
+    # 4. Check Zed cache on Windows
     if sys.platform == "win32":
         local_app = os.environ.get("LOCALAPPDATA", r"C:\Users\User\AppData\Local")
         zed_cache = Path(local_app) / "Zed" / "external_agents" / "registry" / "antigravity-acp"
@@ -64,6 +88,15 @@ def find_server_binary() -> Path:
             exes = sorted(zed_cache.glob("*/agy_acp_server.exe"))
             if exes:
                 return exes[-1]
+
+    # 5. Check parent directories
+    curr = BASE_DIR
+    for _ in range(3):
+        curr = curr.parent
+        for name in bin_names:
+            candidate = curr / name
+            if candidate.exists():
+                return candidate
 
     return BASE_DIR / ("agy_acp_server.exe" if sys.platform == "win32" else "agy_acp_server.par")
 

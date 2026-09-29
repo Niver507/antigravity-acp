@@ -45,6 +45,12 @@ foreach ($c in $CandidatePythons) {
     }
 }
 
+$env:PYTHONIOENCODING = "utf-8"
+try {
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    [Console]::InputEncoding = [System.Text.Encoding]::UTF8
+} catch {}
+
 if (-not $PythonCmd) {
     Write-Error "Python 3 is required but not found. Please install Python 3.10+ from python.org or Microsoft Store."
     exit 1
@@ -53,3 +59,4 @@ if (-not $PythonCmd) {
 $ScriptPath = Join-Path $ScriptDir "agy_acp.py"
 & $PythonCmd $ScriptPath @Arguments
 exit $LASTEXITCODE
+

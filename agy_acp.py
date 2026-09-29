@@ -23,6 +23,23 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 import zipfile
 
+# Force UTF-8 IO encoding and line buffering
+if hasattr(sys.stdin, "reconfigure"):
+    try:
+        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+    except Exception:
+        pass
+
 # Base paths
 BASE_DIR = Path(__file__).resolve().parent
 BIN_DIR = BASE_DIR / "bin"
@@ -119,6 +136,17 @@ def get_platform_key() -> str:
 
 def kill_stale_server_processes():
     """Kills any previous orphaned agy_acp_server processes to prevent lock/port contention."""
+    if sys.platform == "win32":
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/IM", "agy_acp_server.exe", "/T"],
+                capture_output=True,
+                check=False,
+            )
+        except Exception:
+            pass
+        return
+
     try:
         me = os.getpid()
         for line in subprocess.check_output(["ps", "-eo", "pid,comm,args"], text=True).splitlines():
@@ -249,6 +277,9 @@ def get_server_binary_path(registry_info: Optional[Dict[str, Any]] = None) -> Pa
 
 def ensure_runner_script() -> Path:
     """Ensures run_acp.sh and libforce_ipv4.so (for environments like WSL2 where IPv6 drops packets) are configured."""
+    if sys.platform == "win32":
+        return RUNNER_SCRIPT
+
     lh = BASE_DIR / "localharness_external"
     if lh.exists():
         try:
@@ -416,6 +447,9 @@ def find_agy_cli() -> Optional[Dict[str, Any]]:
 
 def setup_xdg_open_wrapper():
     """Sets up bin/xdg-open interceptor that non-blockingly captures any passed URL."""
+    if sys.platform == "win32":
+        return BIN_DIR / "xdg-open"
+
     BIN_DIR.mkdir(parents=True, exist_ok=True)
     wrapper_path = BIN_DIR / "xdg-open"
 
@@ -448,7 +482,7 @@ exit 0
 
 
 def open_in_browser(url: str):
-    """Attempts to open URL across OS environments (WSL, Linux, macOS)."""
+    """Attempts to open URL across OS environments (WSL, Linux, macOS, Windows)."""
     if is_wsl():
         try:
             subprocess.Popen(
@@ -464,6 +498,13 @@ def open_in_browser(url: str):
     if sys.platform == "darwin":
         try:
             subprocess.Popen(["open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except Exception:
+            pass
+
+    if sys.platform == "win32":
+        try:
+            os.startfile(url)
             return True
         except Exception:
             pass
@@ -653,7 +694,8 @@ def check_auth_status(server_bin: Optional[Path] = None) -> bool:
         proc.stdin.flush()
 
         start = time.time()
-        while time.time() - start < 4:
+        init_timeout = 25 if sys.platform == "win32" else 6
+        while time.time() - start < init_timeout:
             if stdout_queue:
                 break
             time.sleep(0.05)
@@ -666,7 +708,8 @@ def check_auth_status(server_bin: Optional[Path] = None) -> bool:
         proc.stdin.flush()
 
         start = time.time()
-        while time.time() - start < 4:
+        auth_timeout = 15 if sys.platform == "win32" else 6
+        while time.time() - start < auth_timeout:
             for line in stdout_queue:
                 if '"id":2' in line or '"id": 2' in line:
                     try:
@@ -689,6 +732,8 @@ def check_auth_status(server_bin: Optional[Path] = None) -> bool:
             proc.terminate()
             proc.wait(timeout=1)
         except Exception:
+            pass
+        if proc.poll() is None:
             try:
                 proc.kill()
             except Exception:
@@ -714,11 +759,15 @@ def cmd_auth(args):
 
     kill_stale_server_processes()
     time.sleep(0.2)
-    setup_xdg_open_wrapper()
+    if sys.platform != "win32":
+        setup_xdg_open_wrapper()
 
     env = os.environ.copy()
-    env["PATH"] = f"{BIN_DIR}:{env.get('PATH', '')}"
-    env["BROWSER"] = str(BIN_DIR / "xdg-open")
+    if sys.platform == "win32":
+        env["PATH"] = f"{BIN_DIR};{env.get('PATH', '')}"
+    else:
+        env["PATH"] = f"{BIN_DIR}:{env.get('PATH', '')}"
+        env["BROWSER"] = str(BIN_DIR / "xdg-open")
     env["PYTHONUNBUFFERED"] = "1"
 
     # Clean previous temp files
@@ -783,7 +832,8 @@ def cmd_auth(args):
     # Wait for initialize response
     start_init = time.time()
     init_data = None
-    while time.time() - start_init < 8:
+    init_timeout = 35 if sys.platform == "win32" else 10
+    while time.time() - start_init < init_timeout:
         if proc.poll() is not None:
             break
         if stdout_queue:
@@ -805,6 +855,11 @@ def cmd_auth(args):
             proc.terminate()
         except Exception:
             pass
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
         return 1
 
     if "error" in init_data:
@@ -837,8 +892,9 @@ def cmd_auth(args):
     auth_url = None
     listener_port = None
     start_wait = time.time()
+    auth_wait_timeout = 35 if sys.platform == "win32" else 15
 
-    while time.time() - start_wait < 15:
+    while time.time() - start_wait < auth_wait_timeout:
         if proc.poll() is not None:
             break
 
@@ -848,7 +904,7 @@ def cmd_auth(args):
             # Check for Auth URL
             m = re.search(r"https://accounts\.google\.com/\S+", line)
             if m:
-                auth_url = m.group(0)
+                auth_url = m.group(0).rstrip("'\")>.,;")
                 port_m = re.search(r"redirect_uri=http%3A%2F%2F(?:127\.0\.0\.1|localhost)%3A(\d+)", auth_url)
                 if not port_m:
                     port_m = re.search(r"http://(?:127\.0\.0\.1|localhost):(\d+)", auth_url)
@@ -911,6 +967,11 @@ def cmd_auth(args):
             pass
         return 1
 
+    try:
+        AUTH_URL_FILE.write_text(auth_url, encoding="utf-8")
+    except Exception:
+        pass
+
     print("\n" + "=" * 70)
     print("GOOGLE AUTHENTICATION REQUIRED")
     print("=" * 70)
@@ -934,16 +995,15 @@ def cmd_auth(args):
     def input_thread():
         """Allows user to paste the callback URL directly into the CLI."""
         while not stop_event.is_set():
-            if sys.stdin.isatty():
-                try:
-                    line = sys.stdin.readline()
-                    if line:
-                        cleaned = line.strip().strip("'\"")
-                        if cleaned and ("code" in cleaned or "http" in cleaned or "127.0.0.1" in cleaned or "localhost" in cleaned):
-                            CALLBACK_URL_FILE.write_text(cleaned, encoding="utf-8")
-                except Exception:
-                    pass
-            else:
+            try:
+                line = sys.stdin.readline()
+                if line:
+                    cleaned = line.strip().strip("'\"")
+                    if cleaned and ("code" in cleaned or "http" in cleaned or "127.0.0.1" in cleaned or "localhost" in cleaned):
+                        CALLBACK_URL_FILE.write_text(cleaned, encoding="utf-8")
+                else:
+                    time.sleep(0.5)
+            except Exception:
                 time.sleep(0.5)
 
     t_in = threading.Thread(target=input_thread, daemon=True)
@@ -1069,6 +1129,7 @@ def cmd_paseo(args):
     agents = config_data.setdefault("agents", {})
     providers = agents.setdefault("providers", {})
 
+    server_bin = get_server_binary_path()
     if is_win:
         bridge_src = BASE_DIR / "acp_bridge.py"
         bridge_dst = config_path.parent / "acp_bridge.py"
@@ -1078,13 +1139,15 @@ def cmd_paseo(args):
         py_exe = sys.executable or "python.exe"
         command = [str(py_exe).replace("\\", "/"), "-u", str(bridge_dst).replace("\\", "/")]
     else:
-        server_bin = get_server_binary_path()
         command = get_server_command(server_bin)
 
     providers["antigravity"] = {
         "extends": "acp",
         "label": "Antigravity",
         "command": command,
+        "env": {
+            "AGY_ACP_SERVER_BIN": str(server_bin.resolve()).replace("\\", "/")
+        },
         "params": {
             "supportsMcpServers": True
         },
@@ -1096,13 +1159,14 @@ def cmd_paseo(args):
     print(f"✓ Updated {config_path} with antigravity provider configuration (command: {command}).")
 
     # Reload Paseo if running
-    if shutil.which("paseo"):
+    paseo_cmd = shutil.which("paseo")
+    if paseo_cmd:
         print("Reloading Paseo daemon configuration...")
-        res = subprocess.run(["paseo", "reload"], capture_output=True, text=True)
+        res = subprocess.run([paseo_cmd, "reload"], capture_output=True, text=True, shell=is_win)
         if res.returncode == 0:
             print("✓ Paseo daemon reloaded.")
             time.sleep(2)
-            subprocess.run(["paseo", "provider", "ls"])
+            subprocess.run([paseo_cmd, "provider", "ls"], shell=is_win)
         elif "ECONNREFUSED" in res.stderr:
             print("ℹ️ Демон Paseo сейчас не запущен. Конфигурация успешно обновлена!")
             print("Запустите демон командой: paseo start")
@@ -1179,15 +1243,19 @@ def cmd_status(args):
     else:
         print(f" [Paseo Config] - {PASEO_CONFIG} not found")
 
-    if shutil.which("paseo"):
-        res = subprocess.run(["paseo", "provider", "ls"], capture_output=True, text=True)
-        if res.returncode == 0 and "antigravity" in res.stdout:
-            for line in res.stdout.splitlines():
-                if "antigravity" in line:
-                    print(f" [Paseo Status] ✓ {line.strip()}")
-                    break
-        else:
-            print(" [Paseo Status] - Antigravity provider not active in 'paseo provider ls'")
+    paseo_cmd = shutil.which("paseo")
+    if paseo_cmd:
+        try:
+            res = subprocess.run([paseo_cmd, "provider", "ls"], capture_output=True, text=True, shell=(sys.platform == "win32"))
+            if res.returncode == 0 and "antigravity" in res.stdout:
+                for line in res.stdout.splitlines():
+                    if "antigravity" in line:
+                        print(f" [Paseo Status] ✓ {line.strip()}")
+                        break
+            else:
+                print(" [Paseo Status] - Antigravity provider not active in 'paseo provider ls'")
+        except Exception:
+            pass
 
     print("=" * 65)
     return 0

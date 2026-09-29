@@ -1,6 +1,13 @@
 #!/bin/bash
-URL="$1"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-echo "$URL" > "$SCRIPT_DIR/auth_url.txt"
-echo "[xdg-open] Intercepted URL: $URL" >&2
-powershell.exe -NoProfile -Command "Start-Process '$URL'" < /dev/null > /dev/null 2>&1 &
+for arg in "$@"; do
+    case "$arg" in
+        http*)
+            echo "$arg" > "$SCRIPT_DIR/auth_url.txt"
+            if command -v powershell.exe >/dev/null 2>&1; then
+                powershell.exe -NoProfile -Command "Start-Process '$arg'" < /dev/null > /dev/null 2>&1 &
+            fi
+            ;;
+    esac
+done
+exit 0
